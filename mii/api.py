@@ -115,6 +115,8 @@ def serve(
     model_name_or_path: str = "",
     model_config: Optional[Dict] = None,
     mii_config: Optional[Dict] = None,
+    tokenizer = None,
+    max_input_token_length = 3600,
     **kwargs,
 ) -> MIIClient:
     """
@@ -153,7 +155,7 @@ def serve(
 
     if mii_config.deployment_type == DeploymentType.LOCAL:
         import_score_file(mii_config.deployment_name, DeploymentType.LOCAL).init()
-        return MIIClient(mii_config=mii_config)
+        return MIIClient(mii_config=mii_config,tokenizer=tokenizer,max_input_token_length=max_input_token_length)
     if mii_config.deployment_type == DeploymentType.AML:
         acr_name = mii.aml_related.utils.get_acr_name()
         mii.aml_related.utils.generate_aml_scripts(

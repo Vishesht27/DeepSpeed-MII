@@ -35,13 +35,16 @@ class MIIClient:
     :param mii_config: MII config for the persistent deployment to connect with.
     :param host: hostname where the persistent deployment is running.
     """
-    def __init__(self, mii_config: MIIConfig, host: str = "localhost") -> None:
+    def __init__(self, mii_config: MIIConfig, host: str = "localhost",
+                tokenizer = tokenizer, max_input_token_length = 3600) -> None:
         self.mii_config = mii_config
         self.task = mii_config.model_config.task
         self.port = mii_config.port_number
         self.asyncio_loop = asyncio.get_event_loop()
         channel = create_channel(host, self.port)
         self.stub = modelresponse_pb2_grpc.ModelResponseStub(channel)
+        self.tokenizer = tokenizer
+        self.max_input_token_length = max_input_token_length
 
     def __call__(self, *args, **kwargs) -> List[Response]:
         """
@@ -68,8 +71,7 @@ class MIIClient:
             yield task_methods.unpack_response_from_proto(response)
 
     def generate(self,
-                 prompts: Union[str,
-                                List[str]],
+                 prompts: dict,
                  streaming_fn: Callable = None,
                  **generate_kwargs: Dict) -> List[Response]:
         """
@@ -82,14 +84,25 @@ class MIIClient:
         :return: A list of :class:`Response` objects containing the generated
             text for all prompts.
         """ # noqa: W605
-        if isinstance(prompts, str):
-            prompts = [prompts]
-        if streaming_fn is not None:
-            if len(prompts) > 1:
-                raise RuntimeError(
-                    "MII client streaming only supports a single prompt input.")
-            generate_kwargs["stream"] = True
-            return self._generate_stream(streaming_fn, prompts, **generate_kwargs)
+        task = payload["task"]
+        inp = payload["input"]
+        if task == "doc_qna":
+            use_empathy,use_short,use_instruction = payload["use_empathy"], payload["use_short"], payload["use_instruction"]
+
+            knowledge_list = inp['knowledge_list']
+            knowledge = get_knowledge(knowledge_list)
+            while get_token_length(self.tokenizer,knowledge) > self.max_input_token_length:
+                knowledge_list = knowledge_list[:-1]
+                knowledge = get_knowledge(knowledge_list)
+    
+            question = inp['query']
+            formatted_input = f"Knowledge: {knowledge}\n\nQuestion: {question}"
+        elif task in ['contextual_user_query_rephrasing', 'contextual_user_query_rephrasing_negative']:
+            formatted_input = inp['query']
+        else: #conversation_summarization
+            formatted_input = inp
+
+        prompts = [f"<sys>{get_prompt(task,use_empathy,use_short,use_instruction)}{formatted_input}\n<bot>"]
 
         return self.asyncio_loop.run_until_complete(
             self._request_async_response(prompts,
@@ -127,3 +140,39 @@ class MIIClient:
         if self.mii_config.enable_restful_api:
             requests.get(
                 f"http://localhost:{self.mii_config.restful_api_port}/terminate")
+
+
+def get_prompt(task: str,use_empathy: bool,use_short: bool, use_instruction:bool):
+    if task == 'conv_summarization':
+        return "Read the given dialogue and summarize it.\n\n"
+    elif task in ['contextual_user_query_rephrasing', 'contextual_user_query_rephrasing_negative']:
+        return 'Rephrase the given last user message based on the given conversation history.\n\n'
+    elif task == 'doc_qna':
+        instruction = 'Answer the given question based only on the given knowledge.\n\n'
+        if use_empathy:          
+            instruction += "If needed, answer with an empathetic sentence (e.g. Im sorry to hear, I apologize, I empathize, etc).\n\n"
+        if use_short:          
+            instruction += "Always answer in concise and short form (<40 words).\n\n"
+        
+        if use_instruction:
+            instruction += "If needed, answer with steps in every new line (e.g. 'Step 1: <content> \n', 'Step 2: <content> \n', etc).\n\n"
+            
+        return instruction
+    else:
+        print(f"task {task} is not supported yet")
+        return
+
+def get_knowledge(knwl_lst):
+    out = ''
+    for i,knowledge in enumerate(knwl_lst):
+        out += '\n'
+        out += f'<{i+1}> {knowledge}'
+    
+    return out
+
+
+def get_token_length(tokenizer,text):
+    encoded = tokenizer(text, 
+                        return_tensors = "pt",
+                        add_special_tokens=False)
+    return encoded['input_ids'].shape[1]
