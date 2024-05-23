@@ -5,6 +5,7 @@
 import asyncio
 import grpc
 import requests
+from transformers import AutoTokenizer
 from typing import Dict, Any, Callable, List, Union
 
 from mii.batching.data_classes import Response
